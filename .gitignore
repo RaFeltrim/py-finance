@@ -1,0 +1,43 @@
+# Diretórios e arquivos do Python
+__pycache__/
+*.py[cod]
+*.pyo
+
+# Arquivos de ambiente virtual
+env/
+venv/
+.venv/
+
+# Configurações do sistema operacional
+.DS_Store
+Thumbs.db
+
+# Arquivos do SQLite
+*.db
+*.sqlite3
+
+# Cache e logs do Streamlit
+.streamlit/
+logs/
+
+# Arquivos temporários
+*.bak
+*.swp
+*.tmp
+*.temp
+*.log
+
+# Configurações de IDEs
+.vscode/
+.idea/
+*.iml
+
+# Exportações
+*.xlsx
+*.xls
+*.csv
+
+# Outros
+*.zip
+*.tar.gz
+*.rar
