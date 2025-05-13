@@ -44,6 +44,21 @@ def atualizar_saldo(valor):
         c.execute('INSERT INTO saldo (id, valor) VALUES (1, ?)', (valor,))
     conn.commit()
 
+def atualizar_saldo_automatico():
+    hoje = date.today().strftime("%Y-%m-%d")
+    c.execute('''
+    SELECT valor, data FROM transacoes
+    WHERE data <= ? AND categoria IN ('Entrada Fixa', 'Entrada Variável')
+    ''', (hoje,))
+    entradas_nao_processadas = c.fetchall()
+
+    total_entradas = sum([entrada[0] for entrada in entradas_nao_processadas])
+
+    if total_entradas != 0:
+        saldo_atual = obter_saldo()
+        novo_saldo = saldo_atual + total_entradas
+        atualizar_saldo(novo_saldo)
+
 # Funções de transações
 def adicionar_transacao(data, descricao, valor, categoria):
     c.execute('''
@@ -61,6 +76,30 @@ def obter_transacoes():
     df = pd.DataFrame(dados, columns=["ID", "Data", "Descrição", "Valor", "Categoria"])
     df['Data'] = pd.to_datetime(df['Data'])
     return df
+
+def calcular_saldo_total_esperado(saldo_atual, transacoes, data_final):
+    transacoes['Data'] = pd.to_datetime(transacoes['Data'])
+    hoje = pd.Timestamp(date.today())
+    data_final = pd.Timestamp(data_final)
+    futuras_transacoes = transacoes[transacoes['Data'] > hoje]
+    saldo_futuro = futuras_transacoes[transacoes['Data'] <= data_final]['Valor'].sum()
+    return saldo_atual + saldo_futuro
+
+def calcular_saldo_fechamento_mes(saldo_atual):
+    hoje = date.today()
+    ultimo_dia_mes = date(hoje.year, hoje.month, calendar.monthrange(hoje.year, hoje.month)[1])
+    dias_do_mes = pd.date_range(start=hoje, end=ultimo_dia_mes)
+
+    saldo_estimado = saldo_atual
+    for dia in dias_do_mes:
+        if dia.weekday() == 1:  # Terça-feira
+            saldo_estimado += 50
+        elif dia.weekday() == 6:  # Domingo
+            saldo_estimado += 60
+        elif dia.weekday() in [3, 4, 5]:  # Quinta a Sábado
+            saldo_estimado += 80
+
+    return saldo_estimado
 
 def editar_transacao(id, nova_descricao, novo_valor, nova_categoria):
     c.execute('''
@@ -87,6 +126,9 @@ def to_excel(df):
 st.set_page_config(page_title="Dashboard Financeiro", layout="wide")
 st.title("📊 Dashboard Financeiro")
 
+# Atualizar saldo automaticamente com base nas entradas previstas para o dia atual ou anteriores
+atualizar_saldo_automatico()
+
 # Sidebar - Saldo Atual
 st.sidebar.header("💼 Saldo Atual")
 saldo_atual = obter_saldo()
@@ -94,7 +136,18 @@ novo_saldo = st.sidebar.number_input("Informe seu saldo disponível (R$)", value
 if st.sidebar.button("Atualizar Saldo"):
     atualizar_saldo(novo_saldo)
     st.sidebar.success("Saldo atualizado com sucesso!")
-    st.rerun()
+    st.experimental_rerun()
+
+# Exibir Saldos no Topo
+transacoes = obter_transacoes()
+ultimo_dia_mes = date(date.today().year, date.today().month, calendar.monthrange(date.today().year, date.today().month)[1])
+saldo_total_esperado = calcular_saldo_total_esperado(saldo_atual, transacoes, ultimo_dia_mes)
+saldo_fechamento_mes = calcular_saldo_fechamento_mes(saldo_atual)
+
+col1, col2, col3 = st.columns(3)
+col1.metric("Saldo Total (Atual)", f"R$ {saldo_atual:.2f}")
+col2.metric("Saldo Total Esperado (Fim do Mês)", f"R$ {saldo_total_esperado:.2f}")
+col3.metric("Saldo no Fechamento do Mês", f"R$ {saldo_fechamento_mes:.2f}")
 
 # Sidebar - Adicionar Transação
 st.sidebar.header("Adicionar Transação")
@@ -102,135 +155,32 @@ with st.sidebar.form(key='nova_transacao', clear_on_submit=True):
     descricao = st.text_input("Descrição")
     valor = st.number_input("Valor (R$)", step=0.01, format="%.2f")
     categoria = st.selectbox("Categoria", ["Entrada Fixa", "Entrada Variável", "Saída"], index=1)
-    tags = {
-        "Entrada Fixa": "💰 Entrada Fixa",
-        "Entrada Variável": "🛅 Entrada Variável",
-        "Saída": "💸 Saída"
-    }
-    st.caption(f"Categoria selecionada: {tags.get(categoria)}")
     datas = st.date_input("Data(s)", min_value=date.today() - timedelta(days=365))
     if isinstance(datas, date):
         datas = [datas]
-    else:
-        datas = sorted(datas)
-    if len(datas) > 1:
-        delta_dias = [(datas[i+1] - datas[i]).days for i in range(len(datas)-1)]
-        consecutivos = all(delta == 1 for delta in delta_dias)
-        if not consecutivos:
-            st.warning("Selecione até 5 dias consecutivos.")
-            datas = datas[:1]
-        elif len(datas) > 5:
-            st.warning("Selecione no máximo 5 dias consecutivos.")
-            datas = datas[:5]
     submit = st.form_submit_button("Adicionar")
     if submit:
         if descricao and valor:
-            if categoria == 'Saída':
-                valor = -abs(valor)
+            valor = -abs(valor) if categoria == 'Saída' else valor
             for d in datas:
                 adicionar_transacao(d.strftime("%Y-%m-%d"), descricao, valor, categoria)
             st.success("Transação adicionada com sucesso!")
         else:
             st.error("Preencha todos os campos.")
 
-# Chat de Entradas Rápidas
-st.sidebar.header("Chat de Entradas Rápidas")
-entrada_rapida = st.sidebar.text_area("Digite transações (ex: -50 ifood)")
-if st.sidebar.button("Enviar Transações"):
-    linhas = entrada_rapida.split('\n')
-    for linha in linhas:
-        partes = linha.strip().split()
-        if len(partes) >= 2:
-            valor = float(partes[0])
-            descricao = ' '.join(partes[1:])
-            categoria = 'Saída' if valor < 0 else 'Entrada Variável'
-            adicionar_transacao(date.today().strftime("%Y-%m-%d"), f"[Diversos] {descricao}", valor, categoria)
-    st.sidebar.success("Transações adicionadas!")
-
 # Exibição de transações
 df = obter_transacoes()
 st.write("### 📋 Transações Registradas")
-
-agrupados = df[df['Descrição'].str.startswith("[Diversos]")]
-outros = df[~df['Descrição'].str.startswith("[Diversos]")]
-
-for i, row in outros.iterrows():
-    with st.expander(f"{row['Data'].date()} | {row['Descrição']} | R$ {row['Valor']:.2f}"):
-        nova_desc = st.text_input(f"Descrição {row['ID']}", row['Descrição'], key=f"desc_{row['ID']}")
-        novo_valor = st.number_input(f"Valor {row['ID']}", value=float(row['Valor']), step=0.01, key=f"valor_{row['ID']}")
-        nova_cat = st.selectbox(f"Categoria {row['ID']}", ["Entrada Fixa", "Entrada Variável", "Saída"], index=["Entrada Fixa", "Entrada Variável", "Saída"].index(row['Categoria']), key=f"cat_{row['ID']}")
-        col_edit, col_del = st.columns(2)
-        if col_edit.button("Editar", key=f"edit_{row['ID']}"):
-            editar_transacao(row['ID'], nova_desc, novo_valor, nova_cat)
-            st.success("Transação editada!")
-            st.rerun()
-        if col_del.button("Remover", key=f"rem_{row['ID']}"):
-            remover_transacao(row['ID'])
-            st.error("Transação removida!")
-            st.rerun()
-
-if not agrupados.empty:
-    with st.expander(f"💡 Diversos ({len(agrupados)} transações)"):
-        for i, row in agrupados.iterrows():
-            with st.container():
-                nova_desc = st.text_input(f"Descrição {row['ID']}", row['Descrição'], key=f"desc_{row['ID']}")
-                novo_valor = st.number_input(f"Valor {row['ID']}", value=float(row['Valor']), step=0.01, key=f"valor_{row['ID']}")
-                nova_cat = st.selectbox(f"Categoria {row['ID']}", ["Entrada Fixa", "Entrada Variável", "Saída"], index=["Entrada Fixa", "Entrada Variável", "Saída"].index(row['Categoria']), key=f"cat_{row['ID']}")
-                col_edit, col_del = st.columns(2)
-                if col_edit.button("Editar", key=f"edit_div_{row['ID']}"):
-                    editar_transacao(row['ID'], nova_desc, novo_valor, nova_cat)
-                    st.success("Transação editada!")
-                    st.rerun()
-                if col_del.button("Remover", key=f"rem_div_{row['ID']}"):
-                    remover_transacao(row['ID'])
-                    st.error("Transação removida!")
-                    st.rerun()
+st.dataframe(df)
 
 # Exportar Excel
 if not df.empty:
     st.download_button("📅 Baixar Excel", data=to_excel(df), file_name="controle_financeiro.xlsx", mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet")
 
-# Calendário
-st.write("### 🗓️ Calendário Financeiro")
-hoje = date.today()
-mes_atual = hoje.month
-ano_atual = hoje.year
-cal = calendar.Calendar()
-dias_mes = [d for d in cal.itermonthdates(ano_atual, mes_atual) if d.month == mes_atual]
-df_mes = df[(df['Data'].dt.month == mes_atual) & (df['Data'].dt.year == ano_atual)]
-agrupado = df_mes.groupby(df_mes['Data'].dt.date)['Valor'].sum()
-agrupado = pd.to_numeric(agrupado, errors='coerce')
-melhores_dias = agrupado[agrupado > 0].nlargest(5)
-
-cores = []
-valores = []
-for dia in dias_mes:
-    valor = agrupado.get(dia, 0)
-    valores.append(valor)
-    if valor > 0:
-        if dia in melhores_dias:
-            cores.append("lightblue")
-        else:
-            cores.append("lightgreen")
-    elif valor < 0:
-        cores.append("lightcoral")
-    else:
-        cores.append("white")
-
-fig = go.Figure(data=[go.Bar(
-    x=[d.strftime('%d/%m') for d in dias_mes],
-    y=valores,
-    marker_color=cores
-)])
-fig.update_layout(title=f"Resumo de {calendar.month_name[mes_atual]} {ano_atual}", xaxis_title="Dia", yaxis_title="Valor do Dia", height=400)
-st.plotly_chart(fig, use_container_width=True)
-
-# Recomendacão de gasto diário
-dias_restantes = len([d for d in dias_mes if d >= hoje])
-saldo_disponivel = saldo_atual
-if dias_restantes > 0:
-    gasto_recomendado = saldo_disponivel / dias_restantes
-    st.info(f"💡 Valor recomendado para gastar por dia: R$ {gasto_recomendado:.2f}")
+# Recomendação de gasto diário
+dias_restantes = len([d for d in pd.date_range(start=pd.Timestamp(date.today()), end=ultimo_dia_mes) if d >= pd.Timestamp(date.today())])
+gasto_recomendado = saldo_atual / dias_restantes if dias_restantes > 0 else 0
+st.info(f"💡 Valor recomendado para gastar por dia: R$ {gasto_recomendado:.2f}")
 
 # Fechar conexão
 conn.close()
